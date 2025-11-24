@@ -1,0 +1,8 @@
+*.log
+test.py
+__pycache__/
+.DS_Store
+.env
+.vscode/
+node_modules/
+GuideLine.md

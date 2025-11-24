@@ -3,6 +3,10 @@
 import math
 from geometry import distance, calculate_angle, normalize_vector
 
+# Constants
+NUMERICAL_GRADIENT_DELTA = 0.0001
+DEFAULT_VDW_CUTOFF = 10.0
+
 def calculate_bond_energy_and_force(molecule):
     """
     Calculate bond stretching energy and add forces to atoms
@@ -67,7 +71,7 @@ def calculate_angle_energy_and_force(molecule):
         
         # Simplified angle force using numerical gradient
         # Calculate force by seeing how energy changes with small movements
-        delta = 0.0001  # Small displacement
+        delta = NUMERICAL_GRADIENT_DELTA
         
         # Save current positions
         x1, y1, z1 = atom1.x, atom1.y, atom1.z
@@ -140,19 +144,66 @@ def calculate_angle_energy_and_force(molecule):
     
     return total_energy
 
-def calculate_vdw_energy_and_force(molecule, cutoff=10.0):
+def build_exclusion_set(molecule):
     """
-    Calculate Van der Waals energy between non-bonded atoms
-    Returns total VDW energy
-    cutoff: ignore pairs beyond this distance (Angstroms)
+    Build a set of atom pairs that should be excluded from VDW calculations.
+    Excludes 1-2 (bonded) and 1-3 (separated by 2 bonds) interactions.
+    
+    Returns: set of tuples (min_idx, max_idx) representing excluded pairs
+    """
+    excluded_pairs = set()
+    
+    # Add all bonded pairs (1-2 interactions)
+    for bond in molecule.bonds:
+        i, j = bond.atom1_index, bond.atom2_index
+        excluded_pairs.add((min(i, j), max(i, j)))
+    
+    # Build adjacency list for finding 1-3 pairs
+    adjacency = {}
+    for bond in molecule.bonds:
+        i, j = bond.atom1_index, bond.atom2_index
+        if i not in adjacency:
+            adjacency[i] = []
+        if j not in adjacency:
+            adjacency[j] = []
+        adjacency[i].append(j)
+        adjacency[j].append(i)
+    
+    # Add 1-3 interactions (atoms separated by exactly 2 bonds)
+    for atom_idx in adjacency:
+        for neighbor in adjacency[atom_idx]:
+            if neighbor in adjacency:
+                for second_neighbor in adjacency[neighbor]:
+                    if second_neighbor != atom_idx:  # Don't count back to original
+                        pair = (min(atom_idx, second_neighbor), max(atom_idx, second_neighbor))
+                        excluded_pairs.add(pair)
+    
+    return excluded_pairs
+
+def calculate_vdw_energy_and_force(molecule, cutoff=DEFAULT_VDW_CUTOFF, excluded_pairs=None):
+    """
+    Calculate Van der Waals energy between non-bonded atoms.
+    Excludes 1-2 (bonded) and 1-3 interactions.
+    
+    Args:
+        molecule: Molecule object
+        cutoff: Ignore pairs beyond this distance (Angstroms)
+        excluded_pairs: Pre-computed set of excluded pairs (optional)
+    
+    Returns: 
+        total VDW energy
     """
     total_energy = 0.0
+    
+    # Build exclusion set if not provided
+    if excluded_pairs is None:
+        excluded_pairs = build_exclusion_set(molecule)
     
     # Check all pairs of atoms
     for i in range(len(molecule.atoms)):
         for j in range(i + 1, len(molecule.atoms)):
-            # Skip if atoms are bonded
-            if is_bonded(molecule, i, j):
+            # Skip if atoms are in exclusion list
+            if (i, j) in excluded_pairs:
                 continue
             
             atom1 = molecule.atoms[i]
@@ -168,6 +219,10 @@ def calculate_vdw_energy_and_force(molecule, cutoff=10.0):
             # Combine rules for VDW parameters
             epsilon = math.sqrt(atom1.epsilon * atom2.epsilon)
             sigma = (atom1.sigma + atom2.sigma) / 2.0
+            
+            # Prevent division by zero for overlapping atoms
+            if r < 0.1:
+                r = 0.1
             
             # Lennard-Jones: E = epsilon * [(sigma/r)^12 - 2*(sigma/r)^6]
             sr = sigma / r
@@ -200,25 +255,46 @@ def calculate_vdw_energy_and_force(molecule, cutoff=10.0):
     return total_energy
 
 def is_bonded(molecule, atom1_index, atom2_index):
-    # Check if two atoms are directly bonded
+    """
+    Check if two atoms are directly bonded (1-2 interaction).
+    
+    Note: This is O(n) and inefficient. Use build_exclusion_set() instead
+    for better performance when checking many pairs.
+    """
     for bond in molecule.bonds:
         if (bond.atom1_index == atom1_index and bond.atom2_index == atom2_index) or \
            (bond.atom1_index == atom2_index and bond.atom2_index == atom1_index):
             return True
     return False
 
-def calculate_total_energy(molecule, include_vdw=True, vdw_cutoff=10.0):
-    ##Calculate total energy and forces for entire molecule
-
+def calculate_total_energy(molecule, include_vdw=True, vdw_cutoff=DEFAULT_VDW_CUTOFF):
+    """
+    Calculate total energy and forces for entire molecule.
+    
+    Args:
+        molecule: Molecule object
+        include_vdw: Whether to include Van der Waals interactions
+        vdw_cutoff: Cutoff distance for VDW calculations (Angstroms)
+    
+    Returns:
+        tuple: (total_energy, bond_energy, angle_energy, vdw_energy)
+    """
     # Zero all forces
     molecule.zero_all_forces()
     
+    # Calculate components
     bond_energy = calculate_bond_energy_and_force(molecule)
     angle_energy = calculate_angle_energy_and_force(molecule)
     
     vdw_energy = 0.0
     if include_vdw:
-        vdw_energy = calculate_vdw_energy_and_force(molecule, vdw_cutoff)
+        # Pre-build exclusion set for efficiency
+        excluded_pairs = build_exclusion_set(molecule)
+        vdw_energy = calculate_vdw_energy_and_force(molecule, vdw_cutoff, excluded_pairs)
+    
+    # Check for NaN or Inf values
+    if not math.isfinite(bond_energy) or not math.isfinite(angle_energy) or not math.isfinite(vdw_energy):
+        raise ValueError("Non-finite energy value detected! Check for numerical issues.")
     
     total = bond_energy + angle_energy + vdw_energy
     

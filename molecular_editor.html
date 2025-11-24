@@ -1,0 +1,357 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Molecular Editor</title>
+    <style>
+        body {
+            margin: 0;
+            font-family: Arial, sans-serif;
+            display: flex;
+            height: 100vh;
+        }
+        #sidebar {
+            width: 250px;
+            background: #2c3e50;
+            color: white;
+            padding: 20px;
+            overflow-y: auto;
+        }
+        #canvas-container {
+            flex: 1;
+            position: relative;
+            background: #ecf0f1;
+        }
+        canvas {
+            display: block;
+            cursor: crosshair;
+        }
+        .button {
+            background: #3498db;
+            color: white;
+            border: none;
+            padding: 10px 15px;
+            margin: 5px 0;
+            cursor: pointer;
+            width: 100%;
+            border-radius: 4px;
+            font-size: 14px;
+        }
+        .button:hover {
+            background: #2980b9;
+        }
+        .button.active {
+            background: #e74c3c;
+        }
+        .element-btn {
+            display: inline-block;
+            width: 45px;
+            margin: 2px;
+            padding: 8px;
+            text-align: center;
+        }
+        h3 {
+            border-bottom: 2px solid #3498db;
+            padding-bottom: 10px;
+            margin-top: 20px;
+        }
+        #output {
+            background: #34495e;
+            padding: 10px;
+            margin-top: 10px;
+            border-radius: 4px;
+            font-family: monospace;
+            font-size: 11px;
+            max-height: 200px;
+            overflow-y: auto;
+        }
+        .info {
+            background: #34495e;
+            padding: 10px;
+            margin: 10px 0;
+            border-radius: 4px;
+            font-size: 12px;
+        }
+    </style>
+</head>
+<body>
+    <div id="sidebar">
+        <h2>Molecular Editor</h2>
+        
+        <h3>Select Element</h3>
+        <button class="button element-btn active" data-element="C">C</button>
+        <button class="button element-btn" data-element="H">H</button>
+        <button class="button element-btn" data-element="O">O</button>
+        <button class="button element-btn" data-element="N">N</button>
+        
+        <h3>Mode</h3>
+        <button class="button active" id="mode-atom">Add Atoms</button>
+        <button class="button" id="mode-bond">Add Bonds</button>
+        <button class="button" id="mode-delete">Delete</button>
+        
+        <h3>Actions</h3>
+        <button class="button" id="btn-clear">Clear All</button>
+        <button class="button" id="btn-export">Export Code</button>
+        
+        <div class="info">
+            <b>Status:</b><br>
+            Element: <span id="current-element">C</span><br>
+            Mode: <span id="current-mode">Add Atoms</span><br>
+            Atoms: <span id="atom-count">0</span><br>
+            Bonds: <span id="bond-count">0</span>
+        </div>
+        
+        <h3>Instructions</h3>
+        <div class="info" style="font-size: 11px;">
+            1. Click canvas to add atoms<br>
+            2. Switch to bond mode<br>
+            3. Click two atoms to bond<br>
+            4. Export when done<br>
+            <br>
+            <b>Note:</b> Small random z values added to enable 3D optimization
+        </div>
+        
+        <div id="output"></div>
+    </div>
+    
+    <div id="canvas-container">
+        <canvas id="canvas"></canvas>
+    </div>
+    
+    <script>
+        var canvas = document.getElementById('canvas');
+        var ctx = canvas.getContext('2d');
+        
+        var atoms = [];
+        var bonds = [];
+        var selectedElement = 'C';
+        var mode = 'atom';
+        var bondStart = null;
+        
+        var elementColors = {
+            'C': '#909090',
+            'H': '#FFFFFF',
+            'O': '#FF0D0D',
+            'N': '#3050F8'
+        };
+        
+        var elementRadii = {
+            'C': 15,
+            'H': 10,
+            'O': 14,
+            'N': 14
+        };
+        
+        function resizeCanvas() {
+            canvas.width = canvas.parentElement.clientWidth;
+            canvas.height = canvas.parentElement.clientHeight;
+            draw();
+        }
+        
+        window.addEventListener('resize', resizeCanvas);
+        resizeCanvas();
+        
+        var elementBtns = document.querySelectorAll('.element-btn');
+        for (var i = 0; i < elementBtns.length; i++) {
+            elementBtns[i].addEventListener('click', function() {
+                for (var j = 0; j < elementBtns.length; j++) {
+                    elementBtns[j].classList.remove('active');
+                }
+                this.classList.add('active');
+                selectedElement = this.getAttribute('data-element');
+                document.getElementById('current-element').textContent = selectedElement;
+            });
+        }
+        
+        document.getElementById('mode-atom').addEventListener('click', function() {
+            mode = 'atom';
+            bondStart = null;
+            document.getElementById('current-mode').textContent = 'Add Atoms';
+            document.getElementById('mode-atom').classList.add('active');
+            document.getElementById('mode-bond').classList.remove('active');
+            document.getElementById('mode-delete').classList.remove('active');
+        });
+        
+        document.getElementById('mode-bond').addEventListener('click', function() {
+            mode = 'bond';
+            bondStart = null;
+            document.getElementById('current-mode').textContent = 'Add Bonds';
+            document.getElementById('mode-bond').classList.add('active');
+            document.getElementById('mode-atom').classList.remove('active');
+            document.getElementById('mode-delete').classList.remove('active');
+        });
+        
+        document.getElementById('mode-delete').addEventListener('click', function() {
+            mode = 'delete';
+            bondStart = null;
+            document.getElementById('current-mode').textContent = 'Delete';
+            document.getElementById('mode-delete').classList.add('active');
+            document.getElementById('mode-atom').classList.remove('active');
+            document.getElementById('mode-bond').classList.remove('active');
+        });
+        
+        canvas.addEventListener('click', function(e) {
+            var rect = canvas.getBoundingClientRect();
+            var x = e.clientX - rect.left;
+            var y = e.clientY - rect.top;
+            
+            if (mode === 'atom') {
+                atoms.push({x: x, y: y, element: selectedElement});
+                updateCounts();
+                draw();
+            }
+            else if (mode === 'bond') {
+                var atomIdx = findAtom(x, y);
+                if (atomIdx !== null) {
+                    if (bondStart === null) {
+                        bondStart = atomIdx;
+                        draw();
+                    } else {
+                        if (bondStart !== atomIdx && !bondExists(bondStart, atomIdx)) {
+                            bonds.push([bondStart, atomIdx]);
+                            updateCounts();
+                        }
+                        bondStart = null;
+                        draw();
+                    }
+                }
+            }
+            else if (mode === 'delete') {
+                var atomIdx = findAtom(x, y);
+                if (atomIdx !== null) {
+                    var newBonds = [];
+                    for (var i = 0; i < bonds.length; i++) {
+                        if (bonds[i][0] !== atomIdx && bonds[i][1] !== atomIdx) {
+                            var b0 = bonds[i][0] > atomIdx ? bonds[i][0] - 1 : bonds[i][0];
+                            var b1 = bonds[i][1] > atomIdx ? bonds[i][1] - 1 : bonds[i][1];
+                            newBonds.push([b0, b1]);
+                        }
+                    }
+                    bonds = newBonds;
+                    atoms.splice(atomIdx, 1);
+                    updateCounts();
+                    draw();
+                }
+            }
+        });
+        
+        function findAtom(x, y) {
+            for (var i = 0; i < atoms.length; i++) {
+                var dx = atoms[i].x - x;
+                var dy = atoms[i].y - y;
+                var dist = Math.sqrt(dx*dx + dy*dy);
+                if (dist < elementRadii[atoms[i].element]) {
+                    return i;
+                }
+            }
+            return null;
+        }
+        
+        function bondExists(i, j) {
+            for (var k = 0; k < bonds.length; k++) {
+                if ((bonds[k][0] === i && bonds[k][1] === j) || 
+                    (bonds[k][0] === j && bonds[k][1] === i)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+        
+        function draw() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            
+            ctx.strokeStyle = '#333';
+            ctx.lineWidth = 3;
+            for (var i = 0; i < bonds.length; i++) {
+                var a1 = atoms[bonds[i][0]];
+                var a2 = atoms[bonds[i][1]];
+                ctx.beginPath();
+                ctx.moveTo(a1.x, a1.y);
+                ctx.lineTo(a2.x, a2.y);
+                ctx.stroke();
+            }
+            
+            for (var i = 0; i < atoms.length; i++) {
+                var atom = atoms[i];
+                ctx.fillStyle = elementColors[atom.element];
+                ctx.strokeStyle = '#000';
+                ctx.lineWidth = 2;
+                ctx.beginPath();
+                ctx.arc(atom.x, atom.y, elementRadii[atom.element], 0, Math.PI * 2);
+                ctx.fill();
+                ctx.stroke();
+                
+                ctx.fillStyle = atom.element === 'H' ? '#000' : '#FFF';
+                ctx.font = 'bold 12px Arial';
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.fillText(atom.element + i, atom.x, atom.y);
+            }
+            
+            if (bondStart !== null && atoms[bondStart]) {
+                var atom = atoms[bondStart];
+                ctx.strokeStyle = '#e74c3c';
+                ctx.lineWidth = 3;
+                ctx.beginPath();
+                ctx.arc(atom.x, atom.y, elementRadii[atom.element] + 5, 0, Math.PI * 2);
+                ctx.stroke();
+            }
+        }
+        
+        function updateCounts() {
+            document.getElementById('atom-count').textContent = atoms.length;
+            document.getElementById('bond-count').textContent = bonds.length;
+        }
+        
+        document.getElementById('btn-clear').addEventListener('click', function() {
+            atoms = [];
+            bonds = [];
+            bondStart = null;
+            updateCounts();
+            draw();
+        });
+        
+        document.getElementById('btn-export').addEventListener('click', function() {
+            if (atoms.length === 0) {
+                alert('No atoms to export!');
+                return;
+            }
+            
+            var code = 'from simulator import create_molecule_from_atoms, run_simulation\n';
+            code += 'from auto_angles import find_angles\n\n';
+            code += 'atoms = [\n';
+            
+            for (var i = 0; i < atoms.length; i++) {
+                var x = (atoms[i].x - canvas.width/2) / 100;
+                var y = (canvas.height/2 - atoms[i].y) / 100;
+                // Add small random z to break planarity
+                var z = (Math.random() - 0.5) * 0.2;
+                code += "    ('" + atoms[i].element + "', " + x.toFixed(2) + ", " + y.toFixed(2) + ", " + z.toFixed(2) + "),\n";
+            }
+            
+            code += ']\n\nbonds = [\n';
+            for (var i = 0; i < bonds.length; i++) {
+                code += '    (' + bonds[i][0] + ', ' + bonds[i][1] + '),\n';
+            }
+            
+            code += ']\n\n';
+            code += 'angles = find_angles(atoms, bonds)\n';
+            code += 'mol = create_molecule_from_atoms(atoms, bonds, angles)\n';
+            code += 'converged, energy, steps = run_simulation(mol, "MyMolecule")\n';
+            
+            if (navigator.clipboard) {
+                navigator.clipboard.writeText(code).then(function() {
+                    document.getElementById('output').innerHTML = 
+                        '<b style="color:#2ecc71">✓ Copied!</b><br><small>Random z values added for 3D optimization</small><br><pre>' + 
+                        code.substring(0, 250) + '...</pre>';
+                }).catch(function() {
+                    document.getElementById('output').innerHTML = '<pre>' + code + '</pre>';
+                });
+            } else {
+                document.getElementById('output').innerHTML = '<pre>' + code + '</pre>';
+            }
+        });
+        
+        console.log('Molecular Editor loaded!');
+    </script>
+</body>
+</html>
